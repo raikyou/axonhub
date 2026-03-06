@@ -49,14 +49,14 @@ type Config struct {
 type Agent struct {
 	config atomic.Pointer[Config]
 
-	provider    Provider
-	bus         bus.EventBus
-	tools       *ToolRegistry
-	logger      *slog.Logger
-	middlewares []Middleware
-
-	messages []Message
-	msgMu    sync.RWMutex
+	provider        Provider
+	contextManager  ContextManager
+	bus             bus.EventBus
+	tools           *ToolRegistry
+	logger          *slog.Logger
+	middlewares     []Middleware
+	initialMessages []Message
+	threadID        atomic.Value
 
 	// requestIndex groups assistant messages that came from the same LLM call.
 	// It is an agent-maintained field: every LLM turn must assign the same
@@ -97,10 +97,15 @@ func WithMiddlewares(mws ...Middleware) Option {
 	}
 }
 
+func WithContextManager(cm ContextManager) Option {
+	return func(a *Agent) {
+		a.contextManager = cm
+	}
+}
+
 func WithMessages(msgs []Message) Option {
 	return func(a *Agent) {
-		a.messages = make([]Message, len(msgs))
-		copy(a.messages, msgs)
+		a.initialMessages = cloneMessages(msgs)
 
 		// Continue request index numbering from persisted history to avoid collisions.
 		var maxRequestIndex int64
@@ -122,14 +127,22 @@ func New(config Config, provider Provider, opts ...Option) *Agent {
 	}
 
 	a := &Agent{
-		provider: provider,
-		tools:    NewToolRegistry(),
-		logger:   slog.Default(),
+		provider:       provider,
+		contextManager: NewSimpleContextManager(nil),
+		tools:          NewToolRegistry(),
+		logger:         slog.Default(),
 	}
 	a.config.Store(&config)
 
 	for _, opt := range opts {
 		opt(a)
+	}
+
+	if a.contextManager == nil {
+		a.contextManager = NewSimpleContextManager(nil)
+	}
+	if len(a.initialMessages) > 0 {
+		a.contextManager.ReplaceMessages(context.Background(), a.initialMessages)
 	}
 
 	return a
@@ -192,9 +205,8 @@ func (a *Agent) emit(ctx context.Context, event AgentEvent) {
 // addMessage appends a message to the internal history and emits
 // an EventMessageAdded event so external consumers can persist it.
 func (a *Agent) addMessage(ctx context.Context, msgs ...Message) {
-	a.msgMu.Lock()
-	a.messages = append(a.messages, msgs...)
-	a.msgMu.Unlock()
+	a.setThreadIDFromContext(ctx)
+	a.contextManager.AddMessages(ctx, msgs...)
 
 	for _, msg := range msgs {
 		a.emit(ctx, AgentEvent{
@@ -206,18 +218,14 @@ func (a *Agent) addMessage(ctx context.Context, msgs ...Message) {
 
 // Messages returns a copy of the current message history.
 func (a *Agent) Messages() []Message {
-	a.msgMu.RLock()
-	defer a.msgMu.RUnlock()
-	out := make([]Message, len(a.messages))
-	copy(out, a.messages)
-	return out
+	ctx := axoncontext.WithThreadID(context.Background(), a.currentThreadID())
+	return a.contextManager.Messages(ctx)
 }
 
 // ClearMessages clears all messages from the agent's history.
 func (a *Agent) ClearMessages() {
-	a.msgMu.Lock()
-	defer a.msgMu.Unlock()
-	a.messages = nil
+	ctx := axoncontext.WithThreadID(context.Background(), a.currentThreadID())
+	a.contextManager.ClearMessages(ctx)
 }
 
 // Inject inserts a message into the agent's history mid-process
@@ -416,11 +424,14 @@ func (a *Agent) PublishRequest(ctx context.Context, content Content) error {
 
 // buildMessages constructs the message list for an LLM call, prepending
 // the system prompts if configured.
-func (a *Agent) buildMessages(cfg Config) []Message {
-	a.msgMu.RLock()
-	history := make([]Message, len(a.messages))
-	copy(history, a.messages)
-	a.msgMu.RUnlock()
+func (a *Agent) buildMessages(ctx context.Context, cfg Config) []Message {
+	history := a.contextManager.Messages(ctx)
+
+	prepared := a.contextManager.Prepare(ctx, history)
+	history = prepared.Messages
+	if prepared.Compacted {
+		a.contextManager.ReplaceMessages(ctx, prepared.PrunedHistory)
+	}
 
 	systemPrompts := a.buildSystemPrompts(cfg)
 	if len(systemPrompts) == 0 {
@@ -512,7 +523,7 @@ func (a *Agent) runLoop(ctx context.Context, cfg Config) error {
 				pendingSteering = nil
 			}
 
-			messages := a.buildMessages(cfg)
+			messages := a.buildMessages(ctx, cfg)
 
 			a.logger.Debug("agent: LLM call",
 				"iteration", iterations,
@@ -523,6 +534,10 @@ func (a *Agent) runLoop(ctx context.Context, cfg Config) error {
 			if err != nil {
 				return fmt.Errorf("agent: LLM call failed: %w", err)
 			}
+			if a.contextManager != nil {
+				a.contextManager.RecordUsage(ctx, resp.Usage)
+			}
+			a.emit(ctx, AgentEvent{Type: EventUsage, Usage: &resp.Usage})
 			requestIndex := a.nextRequestIndex()
 			a.ensureRequestIndex(resp.Messages, requestIndex)
 
@@ -744,7 +759,7 @@ func (a *Agent) runLoopStream(ctx context.Context, cfg Config, events chan Agent
 				pendingSteering = nil
 			}
 
-			messages := a.buildMessages(cfg)
+			messages := a.buildMessages(ctx, cfg)
 
 			a.logger.Debug("agent: LLM stream call",
 				"iteration", iterations,
@@ -924,7 +939,9 @@ func (a *Agent) runLoopStream(ctx context.Context, cfg Config, events chan Agent
 				}
 			}
 
-			_ = usage
+			if usage != nil && a.contextManager != nil {
+				a.contextManager.RecordUsage(ctx, *usage)
+			}
 		}
 
 		if followUp := a.dequeueFollowUp(); len(followUp) > 0 {
@@ -1058,4 +1075,30 @@ func (a *Agent) runAfterMiddlewares(ctx context.Context, tc ToolUse, toolErr err
 		}
 		_ = mws[i].AfterTool(ctx, req, toolErr)
 	}
+}
+
+func (a *Agent) setThreadIDFromContext(ctx context.Context) {
+	id := axoncontext.ThreadID(ctx)
+	defaultThreadID := axoncontext.ThreadID(context.Background())
+	if id != defaultThreadID && a.currentThreadID() == defaultThreadID {
+		defaultCtx := axoncontext.WithThreadID(context.Background(), defaultThreadID)
+		targetCtx := axoncontext.WithThreadID(context.Background(), id)
+		defaultMessages := a.contextManager.Messages(defaultCtx)
+		targetMessages := a.contextManager.Messages(targetCtx)
+		if len(defaultMessages) > 0 && len(targetMessages) == 0 {
+			a.contextManager.ReplaceMessages(targetCtx, defaultMessages)
+			a.contextManager.ClearMessages(defaultCtx)
+		}
+	}
+	a.threadID.Store(id)
+}
+
+func (a *Agent) currentThreadID() string {
+	v := a.threadID.Load()
+	id, _ := v.(string)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return axoncontext.ThreadID(context.Background())
+	}
+	return id
 }

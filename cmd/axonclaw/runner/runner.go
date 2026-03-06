@@ -36,16 +36,17 @@ type Runner struct {
 }
 
 type NewOptions struct {
-	Logger        *slog.Logger
-	Client        graphql.Client
-	Provider      agent.Provider
-	Config        conf.Config
-	Workspace     string
-	Boot          *bootstrap.Result
-	ThreadMgr     *thread.Manager
-	PermEvaluator *permission.Evaluator
-	Bus           bus.EventBus
-	TaskScheduler *task.Scheduler
+	Logger         *slog.Logger
+	Client         graphql.Client
+	Provider       agent.Provider
+	ContextManager agent.ContextManager
+	Config         conf.Config
+	Workspace      string
+	Boot           *bootstrap.Result
+	ThreadMgr      *thread.Manager
+	PermEvaluator  *permission.Evaluator
+	Bus            bus.EventBus
+	TaskScheduler  *task.Scheduler
 }
 
 func New(opts NewOptions) *Runner {
@@ -68,6 +69,7 @@ func New(opts NewOptions) *Runner {
 		SystemPrompts: []string{opts.Boot.SystemPrompt, localPrompt},
 	}, opts.Provider,
 		agent.WithBus(opts.Bus),
+		agent.WithContextManager(opts.ContextManager),
 		agent.WithMiddlewares(permMw),
 	)
 

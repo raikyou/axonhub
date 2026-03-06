@@ -1,12 +1,17 @@
 package axoncontext
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 type contextKey string
 
 const (
 	threadIDKey contextKey = "thread_id"
 	traceIDKey  contextKey = "trace_id"
+
+	DefaultThreadID = "default"
 )
 
 // WithThreadID returns a new context with the given thread ID.
@@ -14,9 +19,16 @@ func WithThreadID(ctx context.Context, threadID string) context.Context {
 	return context.WithValue(ctx, threadIDKey, threadID)
 }
 
-// ThreadID returns the thread ID from the context, or empty string if not set.
+// ThreadID returns the thread ID from the context, or DefaultThreadID if not set.
 func ThreadID(ctx context.Context) string {
+	if ctx == nil {
+		return DefaultThreadID
+	}
 	v, _ := ctx.Value(threadIDKey).(string)
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return DefaultThreadID
+	}
 	return v
 }
 

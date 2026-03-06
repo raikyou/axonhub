@@ -198,6 +198,37 @@ func runAgent(cfg conf.Config, wd string, debug bool) error {
 	}
 	threadMgr := thread.NewManager(threadStore)
 
+	var contextMgr agent.ContextManager
+	if cfg.EnableContextManager {
+		contextCfg := agent.DefaultContextManagerConfig()
+		contextCfg.Enabled = true
+		if cfg.ContextRecentMessages > 0 {
+			contextCfg.MaxRecentMessages = cfg.ContextRecentMessages
+		}
+		if cfg.ContextSoftTokenLimit > 0 {
+			contextCfg.SoftTokenLimit = cfg.ContextSoftTokenLimit
+		}
+		if cfg.ContextCrossThreadSummaries > 0 {
+			contextCfg.CrossThreadSummaryCount = cfg.ContextCrossThreadSummaries
+		}
+		if cfg.ContextSummaryMaxChars > 0 {
+			contextCfg.SummaryMaxChars = cfg.ContextSummaryMaxChars
+		}
+
+		contextStore := agent.NewContextManagerFileStore(filepath.Join(axonclawDir, "context_manager.json"))
+		cm, err := agent.NewPersistentContextManager(contextCfg, contextStore)
+		if err != nil {
+			return fmt.Errorf("initialize context manager: %w", err)
+		}
+		contextMgr = cm
+
+		logger.Info("context manager enabled",
+			"max_recent_messages", contextCfg.MaxRecentMessages,
+			"soft_token_limit", contextCfg.SoftTokenLimit,
+			"cross_thread_summaries", contextCfg.CrossThreadSummaryCount,
+		)
+	}
+
 	eventBus := bus.New(
 		bus.WithRecover(logger),
 		bus.WithTracing(),
@@ -248,15 +279,16 @@ func runAgent(cfg conf.Config, wd string, debug bool) error {
 	})
 
 	r := runner.New(runner.NewOptions{
-		Logger:        logger,
-		Client:        gqlClient,
-		Provider:      provider,
-		Config:        cfg,
-		Workspace:     wd,
-		Boot:          boot,
-		ThreadMgr:     threadMgr,
-		PermEvaluator: permEvaluator,
-		Bus:           eventBus,
+		Logger:         logger,
+		Client:         gqlClient,
+		Provider:       provider,
+		ContextManager: contextMgr,
+		Config:         cfg,
+		Workspace:      wd,
+		Boot:           boot,
+		ThreadMgr:      threadMgr,
+		PermEvaluator:  permEvaluator,
+		Bus:            eventBus,
 	})
 
 	taskStore, err := task.NewStore(filepath.Join(wd, ".axonclaw"))

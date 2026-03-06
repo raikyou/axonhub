@@ -16,21 +16,30 @@ import (
 const FileName = "config.yml"
 
 type Config struct {
-	BaseURL                string        `yml:"base_url"`
-	APIKey                 string        `yml:"api_key"`
-	Name                   string        `yml:"name"`
-	PollInterval           time.Duration `yml:"poll_interval"`
-	HeartbeatInterval      time.Duration `yml:"heartbeat_interval"`
-	AutoSyncConfig         bool          `yml:"auto_sync_config"`
-	AutoSyncConfigInterval time.Duration `yml:"auto_sync_config_interval"`
-	Debug                  bool          `yml:"debug"`
+	BaseURL                     string        `yml:"base_url"`
+	APIKey                      string        `yml:"api_key"`
+	Name                        string        `yml:"name"`
+	PollInterval                time.Duration `yml:"poll_interval"`
+	HeartbeatInterval           time.Duration `yml:"heartbeat_interval"`
+	AutoSyncConfig              bool          `yml:"auto_sync_config"`
+	AutoSyncConfigInterval      time.Duration `yml:"auto_sync_config_interval"`
+	EnableContextManager        bool          `yml:"enable_context_manager"`
+	ContextRecentMessages       int           `yml:"context_recent_messages"`
+	ContextSoftTokenLimit       int           `yml:"context_soft_token_limit"`
+	ContextCrossThreadSummaries int           `yml:"context_cross_thread_summaries"`
+	ContextSummaryMaxChars      int           `yml:"context_summary_max_chars"`
+	Debug                       bool          `yml:"debug"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		PollInterval:           5 * time.Second,
-		HeartbeatInterval:      1 * time.Minute,
-		AutoSyncConfigInterval: 5 * time.Minute,
+		PollInterval:                5 * time.Second,
+		HeartbeatInterval:           1 * time.Minute,
+		AutoSyncConfigInterval:      5 * time.Minute,
+		ContextRecentMessages:       80,
+		ContextSoftTokenLimit:       120000,
+		ContextCrossThreadSummaries: 2,
+		ContextSummaryMaxChars:      16000,
 	}
 }
 
@@ -52,6 +61,11 @@ func LoadOrSaveConfig(baseURL, apiKey, name string) (Config, error) {
 			v.SetDefault("heartbeat_interval", "1m")
 			v.SetDefault("auto_sync_config", false)
 			v.SetDefault("auto_sync_config_interval", "5m")
+			v.SetDefault("enable_context_manager", false)
+			v.SetDefault("context_recent_messages", 80)
+			v.SetDefault("context_soft_token_limit", 120000)
+			v.SetDefault("context_cross_thread_summaries", 2)
+			v.SetDefault("context_summary_max_chars", 16000)
 			v.SetDefault("debug", false)
 		},
 	})
@@ -79,6 +93,21 @@ func LoadOrSaveConfig(baseURL, apiKey, name string) (Config, error) {
 	}
 	if res.Value.AutoSyncConfigInterval > 0 {
 		cfg.AutoSyncConfigInterval = res.Value.AutoSyncConfigInterval
+	}
+	if res.Value.EnableContextManager {
+		cfg.EnableContextManager = res.Value.EnableContextManager
+	}
+	if res.Value.ContextRecentMessages > 0 {
+		cfg.ContextRecentMessages = res.Value.ContextRecentMessages
+	}
+	if res.Value.ContextSoftTokenLimit > 0 {
+		cfg.ContextSoftTokenLimit = res.Value.ContextSoftTokenLimit
+	}
+	if res.Value.ContextCrossThreadSummaries > 0 {
+		cfg.ContextCrossThreadSummaries = res.Value.ContextCrossThreadSummaries
+	}
+	if res.Value.ContextSummaryMaxChars > 0 {
+		cfg.ContextSummaryMaxChars = res.Value.ContextSummaryMaxChars
 	}
 	if res.Value.Debug {
 		cfg.Debug = res.Value.Debug
@@ -199,6 +228,11 @@ func LoadConfig() (Config, error) {
 			v.SetDefault("heartbeat_interval", "1m")
 			v.SetDefault("auto_sync_config", false)
 			v.SetDefault("auto_sync_config_interval", "5m")
+			v.SetDefault("enable_context_manager", false)
+			v.SetDefault("context_recent_messages", 80)
+			v.SetDefault("context_soft_token_limit", 120000)
+			v.SetDefault("context_cross_thread_summaries", 2)
+			v.SetDefault("context_summary_max_chars", 16000)
 			v.SetDefault("debug", false)
 		},
 	})
